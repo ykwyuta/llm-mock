@@ -6,6 +6,17 @@ Gemini / OpenAI / Anthropic / Amazon Bedrock の 4 つの LLM API を **同時�
 テスト対象アプリケーションの SDK の base URL をこのサーバーに向けるだけで、実際の API を
 呼ばずに、決定論的で、テストごとに自由に制御できる応答が返ります。
 
+3 つの動作モードがあります。
+
+| モード | 動作 |
+|---|---|
+| **`MOCK`** (既定) | スタブルールと既定テンプレートから応答を生成する |
+| **`PROXY`** | **本物の API に転送**し、その応答をそのまま返しつつ**ファイルに記録**する |
+| **`REPLAY`** | 記録したファイルから**バイト単位でそのまま**応答する |
+
+つまり「一度だけ本物を叩いて記録 → 以降はそれをテストデータとして再生」という運用ができます
+(→ [7. プロキシ／記録／再生モード](#7-プロキシ記録再生モード))。
+
 ---
 
 ## 1. API 仕様の調査結果
@@ -93,7 +104,7 @@ Gemini / OpenAI / Anthropic / Amazon Bedrock の 4 つの LLM API を **同時�
 
 ```bash
 mvn spring-boot:run          # http://localhost:8080
-mvn test                     # 128 テスト
+mvn test                     # 154 テスト
 mvn package                  # 実行可能 jar
 ```
 
@@ -155,6 +166,10 @@ curl -X POST http://localhost:8080/__admin/reset
 | `GET` | `/__admin/requests` | 記録の検索 (`provider` `model` `endpoint` `limit`) |
 | `DELETE` | `/__admin/requests` | 記録の全削除 |
 | `POST` | `/__admin/reset` | スタブ＋記録の全削除 |
+| `GET` | `/__admin/recordings` | プロキシ記録の一覧 |
+| `GET` | `/__admin/recordings/{key}` | 記録 1 件の全内容 |
+| `POST` | `/__admin/recordings/reload` | 記録ディレクトリの再スキャン |
+| `DELETE` | `/__admin/recordings` | 記録の全削除 |
 | — | `/__admin/h2` | H2 コンソール |
 
 ### スタブルールの主なフィールド
@@ -206,6 +221,20 @@ curl -X POST http://localhost:8080/openai/v1/chat/completions \
 
 ```yaml
 llm-mock:
+  mode: MOCK                   # MOCK | PROXY | REPLAY (→ 7 章)
+  provider-modes:              # プロバイダーごとの上書き (任意)
+    openai: MOCK
+  proxy:
+    recordings-dir: ./recordings
+    record: true               # PROXY 時に記録ファイルを書くか
+    targets: {}                # プロバイダー → 上流ベース URL
+    headers: {}                # プロバイダー → 転送時に付与するヘッダー
+    redact-headers: [authorization, x-api-key, x-goog-api-key, ...]
+    redact-query-params: [key, access_token]
+    connect-timeout: 10s
+    request-timeout: 120s
+  replay:
+    fallback: MOCK             # MOCK | NOT_FOUND
   paths:                       # プロバイダーごとの URL プレフィックス
     openai: /openai
     anthropic: /anthropic
@@ -232,7 +261,114 @@ llm-mock:
 
 ---
 
-## 7. 決定論について
+## 7. プロキシ／記録／再生モード
+
+「本物の応答をテストデータにしたい」ための機能です。
+
+```
+ [MOCK]    アプリ ──▶ llm-mock ──▶ スタブエンジン
+
+ [PROXY]   アプリ ──▶ llm-mock ──▶ 本物の API
+                          │
+                          └──▶ recordings/*.json  (記録)
+
+ [REPLAY]  アプリ ──▶ llm-mock ──▶ recordings/*.json  (本物は不要)
+```
+
+### 使い方
+
+**手順 1: 本物を叩いて記録する**
+
+```yaml
+llm-mock:
+  mode: PROXY
+  proxy:
+    recordings-dir: ./recordings
+    targets:
+      openai: https://api.openai.com
+    headers:
+      openai:
+        Authorization: "Bearer ${OPENAI_API_KEY}"   # 本物の鍵はここで注入
+```
+
+アプリ側の設定は一切変えません。base URL は llm-mock のままで、
+呼び出しはそのまま本物へ転送され、応答が `./recordings/*.json` に書き出されます。
+
+**手順 2: 以降は記録を再生する**
+
+```yaml
+llm-mock:
+  mode: REPLAY
+  proxy:
+    recordings-dir: ./recordings
+  replay:
+    fallback: NOT_FOUND    # 記録が無ければ 404。MOCK ならスタブエンジンにフォールバック
+```
+
+本物の API も資格情報も一切不要になり、応答は**記録したバイト列そのまま**返ります。
+ストリーミング (SSE / Bedrock のバイナリ event stream) も含めて完全に同一です。
+
+### 記録ファイル
+
+1 リクエスト 1 ファイルの素の JSON です。レビューでき、手で編集もできます。
+
+```json
+{
+  "key" : "38ba99d9d6a28483",
+  "provider" : "OPENAI",
+  "recordedAt" : "2026-08-30T11:25:42.395680758Z",
+  "request" : {
+    "method" : "POST",
+    "path" : "/v1/chat/completions",
+    "headers" : { "Authorization" : [ "REDACTED" ], "content-type" : [ "application/json" ] },
+    "body" : "{\"model\":\"gpt-4o\",\"messages\":[...]}"
+  },
+  "response" : {
+    "status" : 200,
+    "headers" : { "content-type" : [ "application/json" ] },
+    "body" : "{\"id\":\"chatcmpl-...\",...}"
+  }
+}
+```
+
+- ファイル名は `{provider}__{path}__{key}.json`。
+- 本文はテキストの content-type ならそのまま、バイナリ (Bedrock の event stream) なら
+  `bodyBase64` に入ります。
+- **資格情報は記録されません。** `Authorization` / `x-api-key` / `x-goog-api-key` などの
+  ヘッダーと、`?key=` などのクエリパラメータは `REDACTED` に置換されます
+  (`proxy.redact-headers` / `proxy.redact-query-params` で調整可)。記録はリポジトリに
+  コミットする前提なので、これは既定で有効です。
+
+### 照合キー
+
+再生時にどの記録を返すかは **provider・メソッド・パス・クエリ・リクエストボディ**の
+ハッシュで決まります。**ヘッダーは含めません** — 記録時と別の API キーで呼んでも同じ記録に
+当たる必要があるためです。クエリも、redact 対象のパラメータは除外し、残りは並べ替えてから
+ハッシュします (`?key=` が違っても、パラメータ順が違っても同じ記録に当たる)。
+一方 `alt=sse` のように**応答形式を変えるパラメータは効きます**。
+
+### プロバイダーごとにモードを変える
+
+```yaml
+llm-mock:
+  mode: MOCK
+  provider-modes:
+    openai: PROXY      # OpenAI だけ本物を叩いて記録し、他はモックのまま
+```
+
+### 実装上の注意
+
+- プロキシ／再生は**サーブレットフィルタ**で実装しています。4 つのコントローラに手を入れて
+  いないので、**バイト列をそのまま流すだけ**で済み、ストリーミングも含めた全エンドポイントが
+  自動的に対象になります。新しいエンドポイントを追加しても、プロキシ対応の追加作業は不要です。
+- `X-Mock-*` ヘッダーは**転送されません**。これは llm-mock 自身への制御ヘッダーであり、
+  本物の API にとっては意味のないノイズだからです。
+- `Accept-Encoding` は `identity` に置き換えます。記録が読める形で残るようにするためです。
+- `/__admin` は、どのモードでも常にローカルで処理されます。
+- プレフィックスを空にしてルート直下にマウントしたプロバイダーは、パスから判別できないため
+  プロキシ対象外です。
+
+## 8. 決定論について
 
 テストで扱いやすいよう、次はすべて決定論的です。
 
@@ -246,15 +382,15 @@ llm-mock:
 
 ---
 
-## 8. テスト
+## 9. テスト
 
 ```bash
-mvn test     # 128 tests
+mvn test     # 154 tests
 ```
 
 テストは 2 段構えです。
 
-### 8.1 HTTP レベル (仕様どおりか)
+### 9.1 HTTP レベル (仕様どおりか)
 
 | テスト | 対象 |
 |---|---|
@@ -264,11 +400,12 @@ mvn test     # 128 tests
 | `OpenAiApiTest` `AnthropicApiTest` `GeminiApiTest` `BedrockApiTest` | 各社の仕様どおりのリクエスト受理／レスポンス形状／ストリーム／エラー封筒 |
 | `AdminApiTest` | スタブ CRUD、記録の検索、リセット |
 | `CrossProviderTest` | **1 つのスタブが 4 プロトコルすべてに効くこと**、逆にプロバイダー限定スタブが漏れないこと |
+| `RecordingKeyTest` | 照合キーの導出 (何が効いて何が効かないか)、ファイル名の生成 |
 
 ストリーミングはレスポンスへ直接書き出す実装のため、非同期ディスパッチなしに素の MockMvc で
 本文を検証できます。
 
-### 8.2 SDK レベル (**本物のクライアントが動くか**)
+### 9.2 SDK レベル (**本物のクライアントが動くか**)
 
 HTTP レベルのテストが保証するのは「**こちらのドキュメント解釈どおりに動くこと**」だけで、
 実際の SDK が要求するのに実装し忘れたエンドポイントやフィールドは検出できません。
@@ -299,7 +436,39 @@ HTTP レベルのテストが保証するのは「**こちらのドキュメン�
 なお、SDK のリトライは無効化しています。テストを遅くするうえ、後続の成功で本当の失敗が
 隠れてしまうためです。
 
-## 9. 既知の制限
+### 9.3 プロキシ／再生 (`ProxyModeTest`)
+
+プロキシ機能のテストで**本物の API を叩くわけにはいかない**ので、
+**このアプリケーション自身のもう 1 インスタンスを「本物の上流 API」役**として使っています。
+
+```
+ [upstream インスタンス]   MOCK モード。応答テンプレートを "[upstream] answered: ..." にして
+                          プロキシ自身の応答と区別できるようにしてある
+        ▲
+        │ 実際の HTTP ホップ
+        │
+ [proxy インスタンス]      PROXY モード。target = upstream の URL、recordings-dir = @TempDir
+        ▲
+        │
+      テスト
+```
+
+ネットワークも資格情報もレート制限も要らないまま、**実際の HTTP ホップ・実際のストリーミング・
+実際のディスク上のファイル**を通ります。検証内容は次のとおりです。
+
+- プロキシが (自分のテンプレートではなく) **上流の応答**を返すこと
+- 記録ファイルが書かれ、**資格情報が含まれないこと**
+- **上流とプロキシを完全に停止した上で**、REPLAY インスタンスが同じ応答を返すこと
+- SSE ストリームと **Bedrock のバイナリ event stream がバイト単位で一致**すること
+  (CRC32 を検証するデコーダで確認)
+- 照合がパスだけでなく**ボディにも効く**こと、逆に**呼び出し側の API キーには効かない**こと
+- エラー応答 (429 とそのエラー封筒) も記録・再生されること
+- `fallback` が `MOCK` ならスタブエンジンに、`NOT_FOUND` なら 404 になること
+- プロバイダーごとのモード切り替え
+- **公式 OpenAI SDK が、プロキシ経由でも再生でも同じ応答を得ること**
+  (id が一致する = 生成ではなく記録が返っている証拠)。ストリーミングも同様
+
+## 10. 既知の制限
 
 - **SigV4 は検証しません。** Bedrock では `Authorization` ヘッダーの有無しか見ません
   (`require-auth: true` の場合)。署名そのものの検証はモックの目的外です。
@@ -312,3 +481,11 @@ HTTP レベルのテストが保証するのは「**こちらのドキュメン�
   ストリーミングを本当に逐次配信するため、レスポンスをバッファリングしない設計にしています。
 - 公式 SDK の検証は **Java SDK に対してのみ**行っています。Python / TypeScript / Go の SDK は
   同じ HTTP 仕様に従うため動作するはずですが、実際に検証したわけではありません。
+- **プロキシ機能は、本物のベンダー API に対しては検証していません。** 上流役として本アプリの
+  別インスタンスを使っています (意図的にそうしています)。転送自体は素の HTTP なので問題ない
+  はずですが、実際のベンダー固有の挙動 (SigV4 署名の再計算が必要なケースなど) は未検証です。
+  とくに **Bedrock は SigV4 が `Host` ヘッダーを含めて署名される**ため、実際の AWS へ
+  プロキシする場合は署名の付け直しが必要になる可能性があります。
+- 記録は 1 リクエスト 1 ファイルで、**同一リクエストに対する複数の異なる応答**
+  (呼ぶたびに違う応答を返すシナリオ) は表現できません。それが必要な場合は、
+  記録ではなく `remainingUses` 付きのスタブルールを使ってください。

@@ -27,6 +27,33 @@ server:
   port: 8080
 
 llm-mock:
+  # MOCK   answer from the stub engine (default)
+  # PROXY  forward to the real upstream API and record the exchange to a file
+  # REPLAY answer from those recordings, byte for byte
+  mode: MOCK
+  # Optional per-provider override, e.g. record OpenAI while the rest stay mocked:
+  # provider-modes:
+  #   openai: PROXY
+  proxy:
+    recordings-dir: ./recordings
+    record: true
+    # Upstream base URLs, required for any provider in PROXY mode.
+    # targets:
+    #   openai: https://api.openai.com
+    #   anthropic: https://api.anthropic.com
+    #   gemini: https://generativelanguage.googleapis.com
+    #   bedrock: https://bedrock-runtime.us-east-1.amazonaws.com
+    # Headers set on the forwarded request, so a real credential can reach the upstream
+    # while the application under test keeps sending a dummy one to the mock.
+    # headers:
+    #   openai:
+    #     Authorization: "Bearer ${OPENAI_API_KEY}"
+    connect-timeout: 10s
+    request-timeout: 120s
+  replay:
+    # MOCK: fall back to the stub engine when nothing matches. NOT_FOUND: fail instead.
+    fallback: MOCK
+
   # Each provider is mounted under its own prefix because the real APIs collide:
   # OpenAI and Anthropic both serve GET /v1/models with different payloads.
   paths:

@@ -6,7 +6,6 @@ import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
-import org.springframework.web.util.ContentCachingRequestWrapper;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -14,9 +13,11 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 /**
- * Keeps a copy of each inbound body so it can be recorded after the controller has parsed
- * it. Only the request is buffered; responses stream through untouched, which keeps SSE
- * and the Bedrock event stream genuinely incremental.
+ * Buffers each inbound body so it can be recorded after the controller parsed it, and so
+ * the proxy filter downstream can read it without stealing it from the controller.
+ *
+ * <p>Only the request is buffered; responses stream through untouched, which keeps SSE and
+ * the Bedrock event stream genuinely incremental.
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)
@@ -30,7 +31,8 @@ public class RequestBodyCachingFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        if (!properties.getRecording().isCaptureRequestBody()) {
+        // Proxy and replay need the body regardless of whether recording is switched on.
+        if (!properties.getRecording().isCaptureRequestBody() && !properties.anyNonMockMode()) {
             return true;
         }
         String method = request.getMethod();
@@ -40,6 +42,7 @@ public class RequestBodyCachingFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                     FilterChain chain) throws ServletException, IOException {
-        chain.doFilter(new ContentCachingRequestWrapper(request, properties.getRecording().getMaxBodyBytes()), response);
+        chain.doFilter(new CachedBodyRequest(request, properties.getRecording().getMaxBodyBytes()),
+                response);
     }
 }

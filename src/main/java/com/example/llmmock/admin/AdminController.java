@@ -18,8 +18,11 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.example.llmmock.config.LlmMockProperties;
 import com.example.llmmock.core.MockApiException;
 import com.example.llmmock.core.Provider;
+import com.example.llmmock.proxy.Recording;
+import com.example.llmmock.proxy.RecordingStore;
 import com.example.llmmock.store.RequestLogRepository;
 import com.example.llmmock.store.StubRule;
 import com.example.llmmock.store.StubRuleRepository;
@@ -39,15 +42,62 @@ public class AdminController {
 
     private final StubRuleRepository stubs;
     private final RequestLogRepository logs;
+    private final RecordingStore recordings;
+    private final LlmMockProperties properties;
 
-    public AdminController(StubRuleRepository stubs, RequestLogRepository logs) {
+    public AdminController(StubRuleRepository stubs, RequestLogRepository logs,
+                           RecordingStore recordings, LlmMockProperties properties) {
         this.stubs = stubs;
         this.logs = logs;
+        this.recordings = recordings;
+        this.properties = properties;
     }
 
     @GetMapping("/health")
     public Map<String, Object> health() {
-        return Map.of("status", "UP", "stubs", stubs.count(), "requests", logs.count());
+        return Map.of("status", "UP", "stubs", stubs.count(), "requests", logs.count(),
+                "mode", properties.getMode(), "recordings", recordings.size());
+    }
+
+    // --- recordings ------------------------------------------------------------------
+
+    /** Lists the recordings currently indexed, without their bodies. */
+    @GetMapping("/recordings")
+    public Map<String, Object> listRecordings() {
+        List<Map<String, Object>> entries = recordings.all().stream()
+                .map(recording -> {
+                    Map<String, Object> entry = new java.util.LinkedHashMap<>();
+                    entry.put("key", recording.key());
+                    entry.put("provider", recording.provider());
+                    entry.put("method", recording.request().method());
+                    entry.put("path", recording.request().path());
+                    entry.put("query", recording.request().query());
+                    entry.put("status", recording.response().status());
+                    entry.put("recordedAt", recording.recordedAt());
+                    return entry;
+                })
+                .toList();
+        return Map.of("directory", recordings.directory().toString(),
+                "count", entries.size(), "recordings", entries);
+    }
+
+    @GetMapping("/recordings/{key}")
+    public Recording getRecording(@PathVariable String key) {
+        return recordings.find(key)
+                .orElseThrow(() -> MockApiException.notFound("No recording with key " + key));
+    }
+
+    /** Rescans the recordings directory, picking up files added since startup. */
+    @PostMapping("/recordings/reload")
+    public Map<String, Object> reloadRecordings() {
+        int count = recordings.reload();
+        return Map.of("directory", recordings.directory().toString(), "count", count);
+    }
+
+    @DeleteMapping("/recordings")
+    public ResponseEntity<Void> deleteRecordings() {
+        recordings.deleteAll();
+        return ResponseEntity.noContent().build();
     }
 
     // --- stubs -----------------------------------------------------------------------

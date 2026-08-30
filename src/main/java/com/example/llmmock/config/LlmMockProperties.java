@@ -1,14 +1,22 @@
 package com.example.llmmock.config;
 
+import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+
+import com.example.llmmock.core.MockMode;
+import com.example.llmmock.core.Provider;
 
 /** Everything about the mock's behaviour that a test suite may want to retune. */
 @ConfigurationProperties(prefix = "llm-mock")
 public class LlmMockProperties {
 
     private final Paths paths = new Paths();
+    private final Proxy proxy = new Proxy();
+    private final Replay replay = new Replay();
     private final Stream stream = new Stream();
     private final Recording recording = new Recording();
     private final Models models = new Models();
@@ -23,7 +31,30 @@ public class LlmMockProperties {
     /** Require a credential header on provider endpoints and reject the request when absent. */
     private boolean requireAuth = false;
 
+    /** Default answering mode for every provider. */
+    private MockMode mode = MockMode.MOCK;
+
+    /** Per-provider overrides of {@link #mode}, e.g. record only OpenAI while mocking the rest. */
+    private final Map<Provider, MockMode> providerModes = new LinkedHashMap<>();
+
+    public MockMode getMode() { return mode; }
+    public void setMode(MockMode mode) { this.mode = mode == null ? MockMode.MOCK : mode; }
+    public Map<Provider, MockMode> getProviderModes() { return providerModes; }
+
+    /** The mode in force for one provider: its own override, else the global default. */
+    public MockMode modeFor(Provider provider) {
+        return providerModes.getOrDefault(provider, mode);
+    }
+
+    /** True when any provider is in a mode that needs the proxy/replay machinery. */
+    public boolean anyNonMockMode() {
+        return mode != MockMode.MOCK || providerModes.containsValue(MockMode.PROXY)
+                || providerModes.containsValue(MockMode.REPLAY);
+    }
+
     public Paths getPaths() { return paths; }
+    public Proxy getProxy() { return proxy; }
+    public Replay getReplay() { return replay; }
     public Stream getStream() { return stream; }
     public Recording getRecording() { return recording; }
     public Models getModels() { return models; }
@@ -53,6 +84,76 @@ public class LlmMockProperties {
         public void setGemini(String v) { this.gemini = v; }
         public String getBedrock() { return bedrock; }
         public void setBedrock(String v) { this.bedrock = v; }
+    }
+
+    /** Settings for {@link MockMode#PROXY}. */
+    public static class Proxy {
+
+        /**
+         * Upstream base URL per provider. The provider's own prefix is stripped from the
+         * inbound path and the remainder is appended, so
+         * {@code /openai/v1/chat/completions} becomes {@code <target>/v1/chat/completions}.
+         */
+        private final Map<Provider, String> targets = new LinkedHashMap<>();
+
+        /**
+         * Headers to set on the forwarded request, per provider. This is how a real
+         * credential reaches the upstream while the application under test keeps sending a
+         * dummy one to the mock.
+         */
+        private final Map<Provider, Map<String, String>> headers = new LinkedHashMap<>();
+
+        /** Where recordings are written and read. */
+        private String recordingsDir = "./recordings";
+
+        /** Write a recording file for each proxied exchange. */
+        private boolean record = true;
+
+        /**
+         * Request headers whose values are replaced with a placeholder before writing a
+         * recording. Recordings are meant to be committed, so credentials must not survive.
+         */
+        private List<String> redactHeaders = List.of("authorization", "x-api-key",
+                "x-goog-api-key", "api-key", "proxy-authorization", "cookie", "set-cookie",
+                "x-amz-security-token");
+
+        /** Query parameters redacted for the same reason, e.g. Gemini's {@code ?key=}. */
+        private List<String> redactQueryParams = List.of("key", "access_token");
+
+        private Duration connectTimeout = Duration.ofSeconds(10);
+        private Duration requestTimeout = Duration.ofSeconds(120);
+
+        public Map<Provider, String> getTargets() { return targets; }
+        public Map<Provider, Map<String, String>> getHeaders() { return headers; }
+        public String getRecordingsDir() { return recordingsDir; }
+        public void setRecordingsDir(String v) { this.recordingsDir = v; }
+        public boolean isRecord() { return record; }
+        public void setRecord(boolean v) { this.record = v; }
+        public List<String> getRedactHeaders() { return redactHeaders; }
+        public void setRedactHeaders(List<String> v) { this.redactHeaders = v; }
+        public List<String> getRedactQueryParams() { return redactQueryParams; }
+        public void setRedactQueryParams(List<String> v) { this.redactQueryParams = v; }
+        public Duration getConnectTimeout() { return connectTimeout; }
+        public void setConnectTimeout(Duration v) { this.connectTimeout = v; }
+        public Duration getRequestTimeout() { return requestTimeout; }
+        public void setRequestTimeout(Duration v) { this.requestTimeout = v; }
+    }
+
+    /** Settings for {@link MockMode#REPLAY}. */
+    public static class Replay {
+
+        /** What to do when no recording matches the request. */
+        public enum Fallback {
+            /** Answer from the stub engine, as in {@link MockMode#MOCK}. */
+            MOCK,
+            /** Fail, so a missing recording is visible rather than silently substituted. */
+            NOT_FOUND
+        }
+
+        private Fallback fallback = Fallback.MOCK;
+
+        public Fallback getFallback() { return fallback; }
+        public void setFallback(Fallback v) { this.fallback = v; }
     }
 
     public static class Stream {
