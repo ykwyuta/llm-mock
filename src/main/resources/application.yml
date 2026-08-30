@@ -1,0 +1,49 @@
+spring:
+  application:
+    name: llm-mock
+  datasource:
+    url: jdbc:h2:mem:llmmock;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: false
+  h2:
+    console:
+      enabled: true
+      path: /__admin/h2
+  jackson:
+    default-property-inclusion: non_null
+  mvc:
+    async:
+      request-timeout: 60s
+
+server:
+  port: 8080
+
+llm-mock:
+  # Each provider is mounted under its own prefix because the real APIs collide:
+  # OpenAI and Anthropic both serve GET /v1/models with different payloads.
+  paths:
+    openai: /openai
+    anthropic: /anthropic
+    gemini: /gemini
+    bedrock: /bedrock
+  default-response-template: "[llm-mock] echo: {{prompt}}"
+  require-auth: false
+  stream:
+    words-per-chunk: 3
+    delay-ms: 0
+  recording:
+    enabled: true
+    max-entries: 1000
+    capture-request-body: true
+
+logging:
+  level:
+    com.example.llmmock: INFO
