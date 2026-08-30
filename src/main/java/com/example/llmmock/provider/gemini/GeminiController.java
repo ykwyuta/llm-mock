@@ -213,6 +213,27 @@ public class GeminiController {
                 new GeminiDtos.ContentEmbedding(embeddings.embed(text, dimensions)));
     }
 
+    @PostMapping("/models/{model}:batchEmbedContents")
+    public GeminiDtos.BatchEmbedContentsResponse batchEmbedContents(
+            @PathVariable String model,
+            @RequestBody GeminiDtos.BatchEmbedContentsRequest body,
+            HttpServletRequest http) {
+        authGuard.check(Provider.GEMINI, http);
+        if (body == null || body.requests() == null || body.requests().isEmpty()) {
+            throw MockApiException.invalidRequest("requests is required and must not be empty");
+        }
+        List<GeminiDtos.ContentEmbedding> results = new ArrayList<>();
+        for (GeminiDtos.EmbedContentRequest request : body.requests()) {
+            int dimensions = request.outputDimensionality() != null ? request.outputDimensionality()
+                    : properties.getEmbedding().getGeminiDimensions();
+            results.add(new GeminiDtos.ContentEmbedding(
+                    embeddings.embed(flatten(request.content()), dimensions)));
+        }
+        engine.recordSimple(Provider.GEMINI, "batchEmbedContents", normaliseModel(model), 200,
+                results.size() + " embedding(s)");
+        return new GeminiDtos.BatchEmbedContentsResponse(results);
+    }
+
     // --- models ----------------------------------------------------------------------
 
     @GetMapping("/models")

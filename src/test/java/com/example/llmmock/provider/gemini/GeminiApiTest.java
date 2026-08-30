@@ -183,6 +183,31 @@ class GeminiApiTest extends MockServerTest {
     }
 
     @Test
+    void batchEmbedContentsIsSupportedBecauseTheSdksRouteEmbeddingsThroughIt() throws Exception {
+        mvc.perform(post("/gemini/v1beta/models/text-embedding-004:batchEmbedContents")
+                        .contentType("application/json").content("""
+                                {"requests":[
+                                  {"model":"models/text-embedding-004",
+                                   "content":{"parts":[{"text":"a"}]}},
+                                  {"model":"models/text-embedding-004",
+                                   "content":{"parts":[{"text":"b"}]},
+                                   "outputDimensionality":16}]}"""))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.embeddings.length()").value(2))
+                .andExpect(jsonPath("$.embeddings[0].values.length()").value(4))
+                .andExpect(jsonPath("$.embeddings[1].values.length()").value(16));
+    }
+
+    @Test
+    void anEmptyBatchEmbedRequestIsRejected() throws Exception {
+        mvc.perform(post("/gemini/v1beta/models/text-embedding-004:batchEmbedContents")
+                        .contentType("application/json").content("""
+                                {"requests":[]}"""))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.status").value("INVALID_ARGUMENT"));
+    }
+
+    @Test
     void modelsAreListedWithTheModelsPrefix() throws Exception {
         mvc.perform(get("/gemini/v1beta/models"))
                 .andExpect(status().isOk())

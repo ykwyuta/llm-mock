@@ -93,7 +93,7 @@ Gemini / OpenAI / Anthropic / Amazon Bedrock の 4 つの LLM API を **同時�
 
 ```bash
 mvn spring-boot:run          # http://localhost:8080
-mvn test                     # 94 テスト
+mvn test                     # 128 テスト
 mvn package                  # 実行可能 jar
 ```
 
@@ -117,7 +117,7 @@ client = OpenAI(base_url="http://localhost:8080/openai/v1", api_key="dummy")
 |---|---|
 | OpenAI | `POST /v1/chat/completions` (SSE 対応)、`POST /v1/completions`、`POST /v1/embeddings`、`GET /v1/models`、`GET /v1/models/{id}` |
 | Anthropic | `POST /v1/messages` (SSE 対応)、`POST /v1/messages/count_tokens`、`GET /v1/models` |
-| Gemini | `POST /v1beta/models/{model}:generateContent`、`:streamGenerateContent` (SSE / JSON 配列)、`:countTokens`、`:embedContent`、`GET /v1beta/models`、`GET /v1beta/models/{model}` |
+| Gemini | `POST /v1beta/models/{model}:generateContent`、`:streamGenerateContent` (SSE / JSON 配列)、`:countTokens`、`:embedContent`、`:batchEmbedContents`、`GET /v1beta/models`、`GET /v1beta/models/{model}` |
 | Bedrock | `POST /model/{id}/converse`、`/converse-stream`、`/invoke`、`/invoke-with-response-stream` |
 
 `InvokeModel` は `anthropic.*` / `amazon.titan-text*` / `amazon.nova*` / `meta.llama*` の
@@ -249,13 +249,17 @@ llm-mock:
 ## 8. テスト
 
 ```bash
-mvn test     # 94 tests
+mvn test     # 128 tests
 ```
+
+テストは 2 段構えです。
+
+### 8.1 HTTP レベル (仕様どおりか)
 
 | テスト | 対象 |
 |---|---|
 | `TextChunkerTest` `TokenCounterTest` `EmbeddingGeneratorTest` `MockRequestTest` | 中核ロジックの単体テスト |
-| `EventStreamEncoderTest` | AWS event stream フレーミングを**独立した デコーダ**で往復検証 (CRC32 を含む) |
+| `EventStreamEncoderTest` | AWS event stream フレーミングを**独立したデコーダ**で往復検証 (CRC32 を含む) |
 | `MockEngineTest` | 決定順序、優先度、使い切り、無効化、不正な正規表現、エラー再現、記録 |
 | `OpenAiApiTest` `AnthropicApiTest` `GeminiApiTest` `BedrockApiTest` | 各社の仕様どおりのリクエスト受理／レスポンス形状／ストリーム／エラー封筒 |
 | `AdminApiTest` | スタブ CRUD、記録の検索、リセット |
@@ -264,7 +268,36 @@ mvn test     # 94 tests
 ストリーミングはレスポンスへ直接書き出す実装のため、非同期ディスパッチなしに素の MockMvc で
 本文を検証できます。
 
----
+### 8.2 SDK レベル (**本物のクライアントが動くか**)
+
+HTTP レベルのテストが保証するのは「**こちらのドキュメント解釈どおりに動くこと**」だけで、
+実際の SDK が要求するのに実装し忘れたエンドポイントやフィールドは検出できません。
+そこで、4 社の**公式 Java SDK をテストスコープで依存に加え**、ランダムポートで起動した
+実サーバーに対して実際に呼ばせています。
+
+| テスト | 使用する公式 SDK |
+|---|---|
+| `OpenAiSdkTest` | `com.openai:openai-java` |
+| `AnthropicSdkTest` | `com.anthropic:anthropic-java` |
+| `GeminiSdkTest` | `com.google.genai:google-genai` |
+| `BedrockSdkTest` | `software.amazon.awssdk:bedrockruntime` (同期＋非同期) |
+
+各 SDK について、非ストリーミング応答、**SDK 自身のパーサによるストリーム復元**、
+ツール呼び出し、エラーの例外型へのマッピング (`RateLimitException` など)、モデル一覧、
+埋め込み、トークン数、そして **SDK が実際に送信したリクエスト本文が記録されること**を
+検証しています。
+
+とくに Bedrock は、AWS SDK の**本物の event stream デコーダ**が `converseStream` と
+`invokeModelWithResponseStream` の両方を読めることを確認しています。バイナリフレーミングの
+検証としてはこれが最も確実です。
+
+> **このテストで実際にバグが 1 件見つかりました。** 公式 SDK の `embedContent` は内部的に
+> `:batchEmbedContents` を呼びますが、これを実装していなかったため 405 を返していました。
+> HTTP レベルのテストは (こちらが実装した `:embedContent` だけを叩いていたので) 全て緑の
+> ままでした。現在は `:batchEmbedContents` を実装し、両レベルでテストしています。
+
+なお、SDK のリトライは無効化しています。テストを遅くするうえ、後続の成功で本当の失敗が
+隠れてしまうためです。
 
 ## 9. 既知の制限
 
@@ -277,3 +310,5 @@ mvn test     # 94 tests
 - **`n > 1` (複数候補) は未対応**で、常に 1 候補を返します。
 - 記録されるのは**リクエストの生バイト列と応答テキスト**で、応答の生 JSON ではありません。
   ストリーミングを本当に逐次配信するため、レスポンスをバッファリングしない設計にしています。
+- 公式 SDK の検証は **Java SDK に対してのみ**行っています。Python / TypeScript / Go の SDK は
+  同じ HTTP 仕様に従うため動作するはずですが、実際に検証したわけではありません。

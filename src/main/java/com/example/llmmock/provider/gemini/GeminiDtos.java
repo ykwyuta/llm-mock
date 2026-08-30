@@ -80,6 +80,14 @@ public final class GeminiDtos {
                                       @JsonAlias("output_dimensionality") Integer outputDimensionality) {
     }
 
+    /**
+     * Batch form of the above. The official SDKs route even a single-input
+     * {@code embedContent} call through {@code :batchEmbedContents}, so this is the
+     * endpoint that actually has to work for them.
+     */
+    public record BatchEmbedContentsRequest(List<EmbedContentRequest> requests) {
+    }
+
     // --- responses -------------------------------------------------------------------
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -107,6 +115,9 @@ public final class GeminiDtos {
     }
 
     public record EmbedContentResponse(ContentEmbedding embedding) {
+    }
+
+    public record BatchEmbedContentsResponse(List<ContentEmbedding> embeddings) {
     }
 
     public record ContentEmbedding(double[] values) {
