@@ -103,6 +103,13 @@ public class LlmMockProperties {
          */
         private final Map<Provider, Map<String, String>> headers = new LinkedHashMap<>();
 
+        /**
+         * AWS SigV4 re-signing, per provider. A signature covers the {@code Host} header
+         * and the path, so the caller's signature - made for this mock - is worthless
+         * upstream and the request has to be signed again for the real endpoint.
+         */
+        private final Map<Provider, SigV4> sigv4 = new LinkedHashMap<>();
+
         /** Where recordings are written and read. */
         private String recordingsDir = "./recordings";
 
@@ -125,6 +132,7 @@ public class LlmMockProperties {
 
         public Map<Provider, String> getTargets() { return targets; }
         public Map<Provider, Map<String, String>> getHeaders() { return headers; }
+        public Map<Provider, SigV4> getSigv4() { return sigv4; }
         public String getRecordingsDir() { return recordingsDir; }
         public void setRecordingsDir(String v) { this.recordingsDir = v; }
         public boolean isRecord() { return record; }
@@ -137,6 +145,39 @@ public class LlmMockProperties {
         public void setConnectTimeout(Duration v) { this.connectTimeout = v; }
         public Duration getRequestTimeout() { return requestTimeout; }
         public void setRequestTimeout(Duration v) { this.requestTimeout = v; }
+    }
+
+    /** AWS SigV4 signing settings for one provider. */
+    public static class SigV4 {
+
+        private boolean enabled = false;
+
+        /** Signing region. Defaults to the region in the target host, then the AWS chain. */
+        private String region;
+
+        /** Signing service name. Defaults to {@code bedrock} for the Bedrock provider. */
+        private String service;
+
+        /**
+         * Explicit credentials. Left unset, the standard AWS provider chain is used, so
+         * environment variables, a profile or an instance role all work unchanged.
+         */
+        private String accessKeyId;
+        private String secretAccessKey;
+        private String sessionToken;
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean v) { this.enabled = v; }
+        public String getRegion() { return region; }
+        public void setRegion(String v) { this.region = v; }
+        public String getService() { return service; }
+        public void setService(String v) { this.service = v; }
+        public String getAccessKeyId() { return accessKeyId; }
+        public void setAccessKeyId(String v) { this.accessKeyId = v; }
+        public String getSecretAccessKey() { return secretAccessKey; }
+        public void setSecretAccessKey(String v) { this.secretAccessKey = v; }
+        public String getSessionToken() { return sessionToken; }
+        public void setSessionToken(String v) { this.sessionToken = v; }
     }
 
     /** Settings for {@link MockMode#REPLAY}. */

@@ -48,6 +48,16 @@ llm-mock:
     # headers:
     #   openai:
     #     Authorization: "Bearer ${OPENAI_API_KEY}"
+    # AWS SigV4 re-signing. A signature covers the Host header and the path, so the
+    # caller's signature - made for this mock - cannot be forwarded to the real endpoint.
+    # Credentials fall back to the standard AWS provider chain when not set here.
+    # sigv4:
+    #   bedrock:
+    #     enabled: true
+    #     region: us-east-1          # defaults to the region in the target host
+    #     service: bedrock           # defaults to "bedrock" for the Bedrock provider
+    #     access-key-id: "${AWS_ACCESS_KEY_ID}"
+    #     secret-access-key: "${AWS_SECRET_ACCESS_KEY}"
     connect-timeout: 10s
     request-timeout: 120s
   replay:

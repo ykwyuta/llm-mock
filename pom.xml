@@ -44,6 +44,26 @@
       <artifactId>h2</artifactId>
       <scope>runtime</scope>
     </dependency>
+
+    <!-- AWS SigV4 signing for the Bedrock proxy path. The vendor implementation is used
+         rather than a hand-rolled one because canonicalisation is where hand-rolled
+         signers break: Bedrock model ids contain ':' in the URL path, and the canonical
+         URI has to be encoded again on top of the wire encoding. -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>http-auth-aws</artifactId>
+      <version>${aws-sdk.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>auth</artifactId>
+      <version>${aws-sdk.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>regions</artifactId>
+      <version>${aws-sdk.version}</version>
+    </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
