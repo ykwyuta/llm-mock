@@ -1,6 +1,5 @@
 package com.example.llmmock.store;
 
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -49,18 +48,25 @@ public class RequestRecorder {
         prune();
     }
 
-    /** Drops the oldest records so a long-running suite cannot exhaust the in-memory database. */
+    /**
+     * Drops the oldest records so a long-running suite cannot exhaust the in-memory
+     * database.
+     *
+     * <p>Row count comes from the id range rather than {@code count(*)}: ids are generated
+     * in order and only ever removed from the front here, so the range is exact and both
+     * bounds are index lookups. Removal is one bulk delete. This runs on every recorded
+     * request, so loading the rows to be deleted would put a ceiling on throughput.
+     */
     private void prune() {
         int max = properties.getRecording().getMaxEntries();
         if (max <= 0) {
             return;
         }
-        long count = logs.count();
-        if (count <= max) {
+        Long highest = logs.highestId();
+        Long lowest = logs.lowestId();
+        if (highest == null || lowest == null || highest - lowest + 1 <= max) {
             return;
         }
-        logs.findAll(Sort.by("id").ascending()).stream()
-                .limit(count - max)
-                .forEach(logs::delete);
+        logs.deleteUpToId(highest - max);
     }
 }

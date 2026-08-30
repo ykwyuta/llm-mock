@@ -72,7 +72,9 @@ llm-mock:
   cost:
     enabled: true
     currency: USD
-    max-entries: 10000
+    # Detail rows kept. Pruning and the cost summary both run in the database, so a large
+    # table costs memory rather than time; budget roughly 150 bytes per row.
+    max-entries: 1000000
     # Price list, per one million tokens, most specific first. Ships empty on purpose:
     # vendor prices change, and a stale number silently produces a confident wrong total.
     # pricing:

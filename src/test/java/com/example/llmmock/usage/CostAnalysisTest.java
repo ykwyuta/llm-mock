@@ -257,6 +257,54 @@ class CostAnalysisTest {
     }
 
     @Test
+    void theDefaultRetentionIsAMillionEntries() {
+        assertThat(new com.example.llmmock.config.LlmMockProperties().getCost().getMaxEntries())
+                .isEqualTo(1_000_000);
+    }
+
+    @Test
+    void theOldestDetailIsDroppedOnceTheCapIsReached() {
+        var mock = instances.start(Map.of("llm-mock.cost.max-entries", "3"));
+        String base = AppInstances.urlOf(mock);
+
+        // A distinct model per call, so the survivors can be named rather than counted.
+        for (int i = 0; i < 5; i++) {
+            post(base + "/openai/v1/chat/completions", chat("model-" + i, "Hello"));
+        }
+
+        JsonNode rows = getJson(base + "/__admin/usage?limit=100");
+        assertThat(rows).hasSize(3);
+        assertThat(rows.valueStream().map(row -> row.get("model").asString()).toList())
+                .containsExactly("model-4", "model-3", "model-2");
+
+        // The summary is computed from what is left, so it agrees with the detail.
+        assertThat(getJson(base + "/__admin/usage/summary").get("totals").get("requests").asInt())
+                .isEqualTo(3);
+    }
+
+    @Test
+    void aClearedTableIsPrunedWithoutIncident() {
+        var mock = instances.start(Map.of("llm-mock.cost.max-entries", "2"));
+        String base = AppInstances.urlOf(mock);
+        post(base + "/openai/v1/chat/completions", chat("gpt-4o", "Hello"));
+
+        deleteAllUsage(base);
+        // Pruning reads the id range, which is empty here; recording has to carry on.
+        post(base + "/openai/v1/chat/completions", chat("gpt-4o", "Hello again"));
+
+        assertThat(getJson(base + "/__admin/usage")).hasSize(1);
+    }
+
+    private void deleteAllUsage(String base) {
+        try {
+            http.send(HttpRequest.newBuilder(URI.create(base + "/__admin/usage"))
+                    .DELETE().build(), HttpResponse.BodyHandlers.discarding());
+        } catch (IOException | InterruptedException ex) {
+            throw new RuntimeException(ex);
+        }
+    }
+
+    @Test
     void resetClearsTheAccounting() {
         var mock = instances.start(Map.of());
         String base = AppInstances.urlOf(mock);

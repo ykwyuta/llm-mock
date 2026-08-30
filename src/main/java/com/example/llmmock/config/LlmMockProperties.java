@@ -184,8 +184,11 @@ public class LlmMockProperties {
         /** Purely a label on the output; no conversion is performed. */
         private String currency = "USD";
 
-        /** Oldest usage rows beyond this count are pruned. */
-        private int maxEntries = 10_000;
+        /**
+         * Oldest usage rows beyond this count are pruned. Both the pruning and the cost
+         * summary are done in the database, so a large table costs memory rather than time.
+         */
+        private int maxEntries = 1_000_000;
 
         /**
          * Price list, most specific first: the first entry whose pattern matches the model

@@ -3,8 +3,9 @@ package com.example.llmmock.store;
 import java.util.List;
 
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface RequestLogRepository extends JpaRepository<RequestLog, Long> {
@@ -20,4 +21,14 @@ public interface RequestLogRepository extends JpaRepository<RequestLog, Long> {
                            @Param("model") String model,
                            @Param("endpoint") String endpoint,
                            Pageable pageable);
+
+    @Query("select min(l.id) from RequestLog l")
+    Long lowestId();
+
+    @Query("select max(l.id) from RequestLog l")
+    Long highestId();
+
+    @Modifying
+    @Query("delete from RequestLog l where l.id <= :id")
+    int deleteUpToId(@Param("id") long id);
 }
