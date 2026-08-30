@@ -1,0 +1,18 @@
+# Overrides layered on top of src/main/resources/application.yml, which still applies.
+spring:
+  datasource:
+    url: jdbc:h2:mem:llmmock-test;DB_CLOSE_DELAY=-1
+
+llm-mock:
+  stream:
+    # No artificial latency: the streaming tests assert on content, not on timing.
+    delay-ms: 0
+  embedding:
+    # Small vectors keep assertion output readable; the dimension itself is under test.
+    openai-dimensions: 8
+    gemini-dimensions: 4
+
+logging:
+  level:
+    root: WARN
+    com.example.llmmock: INFO

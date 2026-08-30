@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.1.1</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.example</groupId>
+  <artifactId>llm-mock</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <name>llm-mock</name>
+  <description>Generic mock server for Gemini / OpenAI / Anthropic / Bedrock LLM APIs</description>
+
+  <properties>
+    <java.version>21</java.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <openai-java.version>4.54.0</openai-java.version>
+    <anthropic-java.version>2.59.0</anthropic-java.version>
+    <google-genai.version>1.68.0</google-genai.version>
+    <aws-sdk.version>2.54.7</aws-sdk.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webmvc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- AWS SigV4 signing for the Bedrock proxy path. The vendor implementation is used
+         rather than a hand-rolled one because canonicalisation is where hand-rolled
+         signers break: Bedrock model ids contain ':' in the URL path, and the canonical
+         URI has to be encoded again on top of the wire encoding. -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>http-auth-aws</artifactId>
+      <version>${aws-sdk.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>auth</artifactId>
+      <version>${aws-sdk.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>regions</artifactId>
+      <version>${aws-sdk.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Spring Boot 4 splits test auto-configuration per module; MockMvc support for
+         Spring MVC lives here rather than in spring-boot-starter-test. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-webmvc-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- The four vendors' official Java SDKs. These are test-only: they exist so the
+         mock is verified against the clients it actually has to satisfy, rather than
+         only against our own reading of the published specs. -->
+    <dependency>
+      <groupId>com.openai</groupId>
+      <artifactId>openai-java</artifactId>
+      <version>${openai-java.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.anthropic</groupId>
+      <artifactId>anthropic-java</artifactId>
+      <version>${anthropic-java.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.google.genai</groupId>
+      <artifactId>google-genai</artifactId>
+      <version>${google-genai.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>bedrockruntime</artifactId>
+      <version>${aws-sdk.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- A synchronous HTTP implementation for the blocking Bedrock client. The async
+         client used for the streaming tests gets netty-nio-client transitively. -->
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>url-connection-client</artifactId>
+      <version>${aws-sdk.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

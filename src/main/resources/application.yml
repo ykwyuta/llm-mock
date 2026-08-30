@@ -1,0 +1,111 @@
+spring:
+  application:
+    name: llm-mock
+  datasource:
+    url: jdbc:h2:mem:llmmock;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: false
+  h2:
+    console:
+      enabled: true
+      path: /__admin/h2
+  jackson:
+    default-property-inclusion: non_null
+  mvc:
+    async:
+      request-timeout: 60s
+
+server:
+  port: 8080
+
+llm-mock:
+  # MOCK          answer from the stub engine (default)
+  # PROXY         forward to the real upstream API and record the exchange to a file
+  # REPLAY        answer from those recordings, byte for byte
+  # CACHED_PROXY  answer from the recording when there is one, otherwise proxy once
+  #               and record it ("intelligent proxy")
+  mode: MOCK
+  # Optional per-provider override, e.g. record OpenAI while the rest stay mocked:
+  # provider-modes:
+  #   openai: PROXY
+  proxy:
+    recordings-dir: ./recordings
+    record: true
+    # Upstream base URLs, required for any provider in PROXY mode.
+    # targets:
+    #   openai: https://api.openai.com
+    #   anthropic: https://api.anthropic.com
+    #   gemini: https://generativelanguage.googleapis.com
+    #   bedrock: https://bedrock-runtime.us-east-1.amazonaws.com
+    # Headers set on the forwarded request, so a real credential can reach the upstream
+    # while the application under test keeps sending a dummy one to the mock.
+    # headers:
+    #   openai:
+    #     Authorization: "Bearer ${OPENAI_API_KEY}"
+    # AWS SigV4 re-signing. A signature covers the Host header and the path, so the
+    # caller's signature - made for this mock - cannot be forwarded to the real endpoint.
+    # Credentials fall back to the standard AWS provider chain when not set here.
+    # sigv4:
+    #   bedrock:
+    #     enabled: true
+    #     region: us-east-1          # defaults to the region in the target host
+    #     service: bedrock           # defaults to "bedrock" for the Bedrock provider
+    #     access-key-id: "${AWS_ACCESS_KEY_ID}"
+    #     secret-access-key: "${AWS_SECRET_ACCESS_KEY}"
+    connect-timeout: 10s
+    request-timeout: 120s
+    cache:
+      # How long a recording may answer in CACHED_PROXY before the upstream is asked
+      # again. Unset means a recording never goes stale, which is what a suite wants.
+      # ttl: 24h
+      # Adds X-Llm-Mock-Source: upstream | cache | recording to the response.
+      source-header: true
+  # Token accounting and cost analysis.
+  cost:
+    enabled: true
+    currency: USD
+    # Detail rows kept. Pruning and the cost summary both run in the database, so a large
+    # table costs memory rather than time; budget roughly 150 bytes per row.
+    max-entries: 1000000
+    # Price list, per one million tokens, most specific first. Ships empty on purpose:
+    # vendor prices change, and a stale number silently produces a confident wrong total.
+    # pricing:
+    #   - model-pattern: "^gpt-4o$"
+    #     input: 2.50
+    #     output: 10.00
+    #     cache-read: 1.25
+    #   - model-pattern: "^claude-sonnet"
+    #     input: 3.00
+    #     output: 15.00
+  replay:
+    # MOCK: fall back to the stub engine when nothing matches. NOT_FOUND: fail instead.
+    fallback: MOCK
+
+  # Each provider is mounted under its own prefix because the real APIs collide:
+  # OpenAI and Anthropic both serve GET /v1/models with different payloads.
+  paths:
+    openai: /openai
+    anthropic: /anthropic
+    gemini: /gemini
+    bedrock: /bedrock
+  default-response-template: "[llm-mock] echo: {{prompt}}"
+  require-auth: false
+  stream:
+    words-per-chunk: 3
+    delay-ms: 0
+  recording:
+    enabled: true
+    max-entries: 1000
+    capture-request-body: true
+
+logging:
+  level:
+    com.example.llmmock: INFO
