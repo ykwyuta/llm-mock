@@ -1,6 +1,7 @@
 package com.example.llmmock.proxy;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -21,6 +22,9 @@ import com.example.llmmock.config.LlmMockProperties;
 import com.example.llmmock.core.MockMode;
 import com.example.llmmock.core.Provider;
 import com.example.llmmock.store.RequestRecorder;
+import com.example.llmmock.usage.UsageExtractor;
+import com.example.llmmock.usage.UsageSource;
+import com.example.llmmock.usage.UsageTracker;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -42,17 +46,25 @@ public class ProxyReplayFilter extends OncePerRequestFilter {
 
     private static final Logger log = LoggerFactory.getLogger(ProxyReplayFilter.class);
 
+    /** Names the answer's origin on the response, so a cache hit is visible to the caller. */
+    public static final String SOURCE_HEADER = "X-Llm-Mock-Source";
+
     private final LlmMockProperties properties;
     private final UpstreamProxy upstream;
     private final RecordingStore recordings;
     private final RequestRecorder requestRecorder;
+    private final UsageExtractor usageExtractor;
+    private final UsageTracker usageTracker;
 
     public ProxyReplayFilter(LlmMockProperties properties, UpstreamProxy upstream,
-                             RecordingStore recordings, RequestRecorder requestRecorder) {
+                             RecordingStore recordings, RequestRecorder requestRecorder,
+                             UsageExtractor usageExtractor, UsageTracker usageTracker) {
         this.properties = properties;
         this.upstream = upstream;
         this.recordings = recordings;
         this.requestRecorder = requestRecorder;
+        this.usageExtractor = usageExtractor;
+        this.usageTracker = usageTracker;
     }
 
     @Override
@@ -81,26 +93,42 @@ public class ProxyReplayFilter extends OncePerRequestFilter {
                 resolved.upstreamPath(), request.getQueryString(), body,
                 properties.getProxy().getRedactQueryParams());
 
-        if (mode == MockMode.REPLAY) {
-            Optional<Recording> match = recordings.find(key);
+        if (mode == MockMode.REPLAY || mode == MockMode.CACHED_PROXY) {
+            Optional<Recording> match = recordings.find(key).filter(this::isFresh);
             if (match.isPresent()) {
-                writeRecorded(resolved.provider(), request, match.get(), response);
+                // A cache hit in CACHED_PROXY is money not spent; a hit in REPLAY is just
+                // offline test data. They are tracked separately for exactly that reason.
+                writeRecorded(resolved.provider(), request, match.get(), response,
+                        mode == MockMode.CACHED_PROXY ? UsageSource.CACHE : UsageSource.RECORDING);
                 return;
             }
-            if (properties.getReplay().getFallback() == LlmMockProperties.Replay.Fallback.NOT_FOUND) {
-                log.warn("No recording for {} {} (key {})", request.getMethod(),
-                        resolved.upstreamPath(), key);
-                response.sendError(HttpServletResponse.SC_NOT_FOUND,
-                        "No recording for key " + key);
+            if (mode == MockMode.REPLAY) {
+                if (properties.getReplay().getFallback()
+                        == LlmMockProperties.Replay.Fallback.NOT_FOUND) {
+                    log.warn("No recording for {} {} (key {})", request.getMethod(),
+                            resolved.upstreamPath(), key);
+                    response.sendError(HttpServletResponse.SC_NOT_FOUND,
+                            "No recording for key " + key);
+                    return;
+                }
+                // Falling through to the stub engine keeps a partially recorded suite usable.
+                log.debug("No recording for key {}; falling back to the mock engine", key);
+                chain.doFilter(request, response);
                 return;
             }
-            // Falling through to the stub engine keeps a partially recorded suite usable.
-            log.debug("No recording for key {}; falling back to the mock engine", key);
-            chain.doFilter(request, response);
-            return;
+            log.debug("Cache miss for key {}; calling upstream once and recording it", key);
         }
 
         proxy(resolved, request, response, body, key);
+    }
+
+    /** A recording is stale once it is older than the configured cache TTL. */
+    private boolean isFresh(Recording recording) {
+        Duration ttl = properties.getProxy().getCache().getTtl();
+        if (ttl == null || ttl.isZero() || ttl.isNegative() || recording.recordedAt() == null) {
+            return true;
+        }
+        return recording.recordedAt().plus(ttl).isAfter(Instant.now());
     }
 
     // --- proxy ------------------------------------------------------------------------
@@ -114,6 +142,7 @@ public class ProxyReplayFilter extends OncePerRequestFilter {
                             + " is not set");
             return;
         }
+        setSourceHeader(response, UsageSource.UPSTREAM);
         UpstreamProxy.Result result;
         try {
             result = upstream.forward(resolved.provider(), request, resolved.upstreamPath(), body,
@@ -139,14 +168,17 @@ public class ProxyReplayFilter extends OncePerRequestFilter {
                                     java.nio.charset.StandardCharsets.UTF_8)),
                     Recording.response(result.status(), result.headers(), result.body())));
         }
+        recordUsage(resolved, UsageSource.UPSTREAM, headerOf(result.headers(), "content-type"),
+                result.body());
         logInteraction(resolved, request, result.status(), "proxied upstream");
     }
 
     // --- replay -----------------------------------------------------------------------
 
     private void writeRecorded(Provider provider, HttpServletRequest request, Recording recording,
-                               HttpServletResponse response) throws IOException {
+                               HttpServletResponse response, UsageSource source) throws IOException {
         Recording.RecordedResponse recorded = recording.response();
+        setSourceHeader(response, source);
         response.setStatus(recorded.status());
         if (recorded.headers() != null) {
             recorded.headers().forEach((name, values) -> {
@@ -163,8 +195,52 @@ public class ProxyReplayFilter extends OncePerRequestFilter {
         response.setContentLength(bytes.length);
         response.getOutputStream().write(bytes);
         response.getOutputStream().flush();
+        recordUsage(new ProviderPath(provider, recording.request().path()), source,
+                recorded.contentType(), bytes);
         logInteraction(new ProviderPath(provider, recording.request().path()), request,
-                recorded.status(), "replayed recording " + recording.key());
+                recorded.status(), source == UsageSource.CACHE
+                        ? "cache hit " + recording.key()
+                        : "replayed recording " + recording.key());
+    }
+
+    // --- accounting -------------------------------------------------------------------
+
+    private void setSourceHeader(HttpServletResponse response, UsageSource source) {
+        if (properties.getProxy().getCache().isSourceHeader()) {
+            response.setHeader(SOURCE_HEADER, source.name().toLowerCase(Locale.ROOT));
+        }
+    }
+
+    /**
+     * Pulls the token counts out of the answer. In proxy mode the response was produced
+     * upstream, so its body is the only place those numbers exist.
+     */
+    private void recordUsage(ProviderPath resolved, UsageSource source, String contentType,
+                             byte[] body) {
+        usageExtractor.extract(resolved.provider(), resolved.upstreamPath(), contentType, body)
+                .ifPresent(extracted -> usageTracker.record(resolved.provider(), extracted.model(),
+                        resolved.upstreamPath(), isStreaming(contentType), source,
+                        extracted.usage()));
+    }
+
+    private boolean isStreaming(String contentType) {
+        if (contentType == null) {
+            return false;
+        }
+        String value = contentType.toLowerCase(Locale.ROOT);
+        return value.startsWith("text/event-stream") || value.contains("vnd.amazon.eventstream");
+    }
+
+    private static String headerOf(Map<String, List<String>> headers, String name) {
+        if (headers == null) {
+            return null;
+        }
+        for (Map.Entry<String, List<String>> header : headers.entrySet()) {
+            if (header.getKey().equalsIgnoreCase(name) && !header.getValue().isEmpty()) {
+                return header.getValue().get(0);
+            }
+        }
+        return null;
     }
 
     // --- helpers ----------------------------------------------------------------------

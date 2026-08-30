@@ -10,21 +10,19 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
 
-import com.example.llmmock.LlmMockApplication;
 import com.openai.client.OpenAIClient;
 import com.openai.client.okhttp.OpenAIOkHttpClient;
 import com.openai.core.http.StreamResponse;
 import com.openai.models.chat.completions.ChatCompletion;
 import com.openai.models.chat.completions.ChatCompletionChunk;
 import com.openai.models.chat.completions.ChatCompletionCreateParams;
+import com.example.llmmock.support.AppInstances;
 import com.example.llmmock.support.EventStreamDecoder;
 import com.example.llmmock.support.Sse;
 
@@ -43,41 +41,24 @@ class ProxyModeTest {
     @TempDir
     Path recordingsDir;
 
-    private final List<ConfigurableApplicationContext> started = new ArrayList<>();
+    private final AppInstances instances = new AppInstances();
     private final HttpClient http = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NEVER)
             .build();
 
     @AfterEach
     void stopAll() {
-        // Newest first, so a proxy never outlives the upstream it points at.
-        for (int i = started.size() - 1; i >= 0; i--) {
-            started.get(i).close();
-        }
-        started.clear();
+        instances.close();
     }
 
     // --- instance management -----------------------------------------------------------
 
     private ConfigurableApplicationContext start(Map<String, String> properties) {
-        List<String> args = new ArrayList<>();
-        // Command-line args, not SpringApplicationBuilder#properties: the latter becomes
-        // default properties, which application.yml (server.port: 8080) would override.
-        args.add("--server.port=0");
-        // Each instance gets its own in-memory database so they cannot share stub rules.
-        args.add("--spring.datasource.url=jdbc:h2:mem:" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1");
-        args.add("--spring.main.banner-mode=off");
-        args.add("--logging.level.root=WARN");
-        properties.forEach((key, value) -> args.add("--" + key + "=" + value));
-
-        ConfigurableApplicationContext context = new SpringApplicationBuilder(LlmMockApplication.class)
-                .run(args.toArray(String[]::new));
-        started.add(context);
-        return context;
+        return instances.start(properties);
     }
 
     private String urlOf(ConfigurableApplicationContext context) {
-        return "http://localhost:" + context.getEnvironment().getProperty("local.server.port");
+        return AppInstances.urlOf(context);
     }
 
     /** An upstream in plain MOCK mode, standing in for the vendor's real API. */
@@ -233,9 +214,7 @@ class ProxyModeTest {
         String proxied = postText(urlOf(proxy) + "/openai/v1/chat/completions", CHAT_BODY);
 
         // Nothing to fall back on: the upstream is gone and so is the proxy.
-        proxy.close();
-        upstream.close();
-        started.clear();
+        instances.stopAll();
 
         var replay = startReplay("MOCK");
         String replayed = postText(urlOf(replay) + "/openai/v1/chat/completions", CHAT_BODY);
@@ -251,9 +230,7 @@ class ProxyModeTest {
         postText(urlOf(proxy) + "/openai/v1/chat/completions", CHAT_BODY);
         postText(urlOf(proxy) + "/openai/v1/chat/completions", """
                 {"model":"gpt-4o","messages":[{"role":"user","content":"Goodbye"}]}""");
-        proxy.close();
-        upstream.close();
-        started.clear();
+        instances.stopAll();
 
         assertThat(recordingFiles()).hasSize(2);
 
@@ -272,9 +249,7 @@ class ProxyModeTest {
         postText(urlOf(proxy) + "/gemini/v1beta/models/gemini-2.5-pro:generateContent?key=record-key",
                 """
                         {"contents":[{"role":"user","parts":[{"text":"Hello"}]}]}""");
-        proxy.close();
-        upstream.close();
-        started.clear();
+        instances.stopAll();
 
         var replay = startReplay("NOT_FOUND");
         // A different key in the query must still hit the same recording.
@@ -326,9 +301,7 @@ class ProxyModeTest {
         String proxiedText = new String(proxied.body(), java.nio.charset.StandardCharsets.UTF_8);
         assertThat(Sse.dataLines(proxiedText)).last().isEqualTo("[DONE]");
 
-        proxy.close();
-        upstream.close();
-        started.clear();
+        instances.stopAll();
 
         var replay = startReplay("NOT_FOUND");
         HttpResponse<byte[]> replayed =
@@ -361,9 +334,7 @@ class ProxyModeTest {
         // A binary body cannot be stored as text, so this exercises the base64 path.
         assertThat(Files.readString(recordingFiles().get(0))).contains("bodyBase64");
 
-        proxy.close();
-        upstream.close();
-        started.clear();
+        instances.stopAll();
 
         var replay = startReplay("NOT_FOUND");
         HttpResponse<byte[]> replayed = post(urlOf(replay) + url, body);
@@ -412,9 +383,7 @@ class ProxyModeTest {
         String proxiedText = new String(proxied.body(), java.nio.charset.StandardCharsets.UTF_8);
         assertThat(proxiedText).contains("rate_limit_error").contains("Slow down");
 
-        proxy.close();
-        upstream.close();
-        started.clear();
+        instances.stopAll();
 
         var replay = startReplay("NOT_FOUND");
         HttpResponse<byte[]> replayed = post(urlOf(replay) + "/openai/v1/chat/completions",
@@ -451,9 +420,7 @@ class ProxyModeTest {
         assertThat(viaProxy.choices().get(0).message().content())
                 .hasValue("[upstream] answered: Hello");
 
-        proxy.close();
-        upstream.close();
-        started.clear();
+        instances.stopAll();
 
         var replay = startReplay("NOT_FOUND");
         ChatCompletion viaReplay = openAiClientFor(replay).chat().completions().create(params);
@@ -480,9 +447,7 @@ class ProxyModeTest {
         String viaProxy = collectStream(openAiClientFor(proxy), params);
         assertThat(viaProxy).isEqualTo("[upstream] answered: one two three four five six");
 
-        proxy.close();
-        upstream.close();
-        started.clear();
+        instances.stopAll();
 
         var replay = startReplay("NOT_FOUND");
         // The SDK's own SSE parser has to accept the bytes that came off disk.
@@ -506,9 +471,7 @@ class ProxyModeTest {
         var upstream = startUpstream();
         var proxy = startProxy(urlOf(upstream));
         postText(urlOf(proxy) + "/openai/v1/chat/completions", CHAT_BODY);
-        proxy.close();
-        upstream.close();
-        started.clear();
+        instances.stopAll();
 
         var replay = startReplay("MOCK");
         String listing = postGet(urlOf(replay) + "/__admin/recordings");

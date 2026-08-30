@@ -15,6 +15,7 @@ import com.example.llmmock.core.Provider;
 public class LlmMockProperties {
 
     private final Paths paths = new Paths();
+    private final Cost cost = new Cost();
     private final Proxy proxy = new Proxy();
     private final Replay replay = new Replay();
     private final Stream stream = new Stream();
@@ -48,11 +49,14 @@ public class LlmMockProperties {
 
     /** True when any provider is in a mode that needs the proxy/replay machinery. */
     public boolean anyNonMockMode() {
-        return mode != MockMode.MOCK || providerModes.containsValue(MockMode.PROXY)
-                || providerModes.containsValue(MockMode.REPLAY);
+        if (mode != MockMode.MOCK) {
+            return true;
+        }
+        return providerModes.values().stream().anyMatch(value -> value != MockMode.MOCK);
     }
 
     public Paths getPaths() { return paths; }
+    public Cost getCost() { return cost; }
     public Proxy getProxy() { return proxy; }
     public Replay getReplay() { return replay; }
     public Stream getStream() { return stream; }
@@ -130,6 +134,10 @@ public class LlmMockProperties {
         private Duration connectTimeout = Duration.ofSeconds(10);
         private Duration requestTimeout = Duration.ofSeconds(120);
 
+        private final Cache cache = new Cache();
+
+        public Cache getCache() { return cache; }
+
         public Map<Provider, String> getTargets() { return targets; }
         public Map<Provider, Map<String, String>> getHeaders() { return headers; }
         public Map<Provider, SigV4> getSigv4() { return sigv4; }
@@ -145,6 +153,76 @@ public class LlmMockProperties {
         public void setConnectTimeout(Duration v) { this.connectTimeout = v; }
         public Duration getRequestTimeout() { return requestTimeout; }
         public void setRequestTimeout(Duration v) { this.requestTimeout = v; }
+    }
+
+    /** Settings for {@link MockMode#CACHED_PROXY}. */
+    public static class Cache {
+
+        /**
+         * How long a recording may answer before the upstream is consulted again. Zero or
+         * unset means a recording never goes stale, which is what a test suite wants.
+         */
+        private Duration ttl;
+
+        /**
+         * Add {@code X-Llm-Mock-Source} to proxied, cached and replayed responses so a hit
+         * can be told from a miss without reading the server log.
+         */
+        private boolean sourceHeader = true;
+
+        public Duration getTtl() { return ttl; }
+        public void setTtl(Duration v) { this.ttl = v; }
+        public boolean isSourceHeader() { return sourceHeader; }
+        public void setSourceHeader(boolean v) { this.sourceHeader = v; }
+    }
+
+    /** Token accounting and the price list used to turn it into money. */
+    public static class Cost {
+
+        private boolean enabled = true;
+
+        /** Purely a label on the output; no conversion is performed. */
+        private String currency = "USD";
+
+        /** Oldest usage rows beyond this count are pruned. */
+        private int maxEntries = 10_000;
+
+        /**
+         * Price list, most specific first: the first entry whose pattern matches the model
+         * wins. Empty by default on purpose - published prices change, and a wrong number
+         * silently produces a wrong total, which is worse than no total at all.
+         */
+        private List<Price> pricing = new java.util.ArrayList<>();
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean v) { this.enabled = v; }
+        public String getCurrency() { return currency; }
+        public void setCurrency(String v) { this.currency = v; }
+        public int getMaxEntries() { return maxEntries; }
+        public void setMaxEntries(int v) { this.maxEntries = v; }
+        public List<Price> getPricing() { return pricing; }
+        public void setPricing(List<Price> v) { this.pricing = v == null ? new java.util.ArrayList<>() : v; }
+    }
+
+    /** Prices are per one million tokens, the unit every vendor quotes. */
+    public static class Price {
+
+        private String modelPattern;
+        private java.math.BigDecimal input;
+        private java.math.BigDecimal output;
+        private java.math.BigDecimal cacheRead;
+        private java.math.BigDecimal cacheWrite;
+
+        public String getModelPattern() { return modelPattern; }
+        public void setModelPattern(String v) { this.modelPattern = v; }
+        public java.math.BigDecimal getInput() { return input; }
+        public void setInput(java.math.BigDecimal v) { this.input = v; }
+        public java.math.BigDecimal getOutput() { return output; }
+        public void setOutput(java.math.BigDecimal v) { this.output = v; }
+        public java.math.BigDecimal getCacheRead() { return cacheRead; }
+        public void setCacheRead(java.math.BigDecimal v) { this.cacheRead = v; }
+        public java.math.BigDecimal getCacheWrite() { return cacheWrite; }
+        public void setCacheWrite(java.math.BigDecimal v) { this.cacheWrite = v; }
     }
 
     /** AWS SigV4 signing settings for one provider. */

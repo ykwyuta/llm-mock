@@ -16,5 +16,12 @@ public enum MockMode {
      * Answer from previously recorded files, byte for byte. Requests with no matching
      * recording fall back according to {@code llm-mock.replay.fallback}.
      */
-    REPLAY
+    REPLAY,
+
+    /**
+     * Proxy, but answer from the recording when the same request has been seen before.
+     * A repeated request costs nothing and returns instantly; a new one goes upstream once
+     * and is recorded, so a suite converges on a complete set of fixtures by being run.
+     */
+    CACHED_PROXY
 }

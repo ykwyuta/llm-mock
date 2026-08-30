@@ -15,6 +15,9 @@ import com.example.llmmock.store.RequestRecorder;
 import com.example.llmmock.store.StubRule;
 import com.example.llmmock.store.StubRuleRepository;
 import com.example.llmmock.store.StubUsage;
+import com.example.llmmock.usage.TokenUsage;
+import com.example.llmmock.usage.UsageSource;
+import com.example.llmmock.usage.UsageTracker;
 
 /**
  * Decides what the mock answers and records what it was asked.
@@ -33,14 +36,17 @@ public class MockEngine {
     private final StubUsage stubUsage;
     private final RequestRecorder recorder;
     private final TokenCounter tokenCounter;
+    private final UsageTracker usageTracker;
     private final LlmMockProperties properties;
 
     public MockEngine(StubRuleRepository stubs, StubUsage stubUsage, RequestRecorder recorder,
-                      TokenCounter tokenCounter, LlmMockProperties properties) {
+                      TokenCounter tokenCounter, UsageTracker usageTracker,
+                      LlmMockProperties properties) {
         this.stubs = stubs;
         this.stubUsage = stubUsage;
         this.recorder = recorder;
         this.tokenCounter = tokenCounter;
+        this.usageTracker = usageTracker;
         this.properties = properties;
     }
 
@@ -81,6 +87,10 @@ public class MockEngine {
         consume(stub);
         Usage usage = new Usage(inputTokens, outputTokens);
         record(request, 200, stub, inputTokens, outputTokens, text);
+        // Tagged MOCK so a cost report can tell synthetic counts from real spend.
+        usageTracker.record(request.provider(), request.model(), request.endpoint(),
+                request.stream(), UsageSource.MOCK,
+                TokenUsage.of(inputTokens, outputTokens));
 
         return new MockCompletion(Ids.hex(24), request.model(), text, toolCalls, finishReason, usage,
                 stub == null ? null : stub.getName());

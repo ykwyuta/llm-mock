@@ -27,9 +27,11 @@ server:
   port: 8080
 
 llm-mock:
-  # MOCK   answer from the stub engine (default)
-  # PROXY  forward to the real upstream API and record the exchange to a file
-  # REPLAY answer from those recordings, byte for byte
+  # MOCK          answer from the stub engine (default)
+  # PROXY         forward to the real upstream API and record the exchange to a file
+  # REPLAY        answer from those recordings, byte for byte
+  # CACHED_PROXY  answer from the recording when there is one, otherwise proxy once
+  #               and record it ("intelligent proxy")
   mode: MOCK
   # Optional per-provider override, e.g. record OpenAI while the rest stay mocked:
   # provider-modes:
@@ -60,6 +62,27 @@ llm-mock:
     #     secret-access-key: "${AWS_SECRET_ACCESS_KEY}"
     connect-timeout: 10s
     request-timeout: 120s
+    cache:
+      # How long a recording may answer in CACHED_PROXY before the upstream is asked
+      # again. Unset means a recording never goes stale, which is what a suite wants.
+      # ttl: 24h
+      # Adds X-Llm-Mock-Source: upstream | cache | recording to the response.
+      source-header: true
+  # Token accounting and cost analysis.
+  cost:
+    enabled: true
+    currency: USD
+    max-entries: 10000
+    # Price list, per one million tokens, most specific first. Ships empty on purpose:
+    # vendor prices change, and a stale number silently produces a confident wrong total.
+    # pricing:
+    #   - model-pattern: "^gpt-4o$"
+    #     input: 2.50
+    #     output: 10.00
+    #     cache-read: 1.25
+    #   - model-pattern: "^claude-sonnet"
+    #     input: 3.00
+    #     output: 15.00
   replay:
     # MOCK: fall back to the stub engine when nothing matches. NOT_FOUND: fail instead.
     fallback: MOCK

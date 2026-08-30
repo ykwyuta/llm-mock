@@ -10,14 +10,12 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -27,6 +25,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import com.example.llmmock.LlmMockApplication;
 import com.example.llmmock.config.CachedBodyRequest;
+import com.example.llmmock.support.AppInstances;
 import com.example.llmmock.support.SigV4Verifier;
 
 import jakarta.servlet.FilterChain;
@@ -63,7 +62,7 @@ class SigV4ProxyTest {
     @TempDir
     Path recordingsDir;
 
-    private final List<ConfigurableApplicationContext> started = new ArrayList<>();
+    private final AppInstances instances = new AppInstances();
     private final HttpClient http = HttpClient.newHttpClient();
 
     @BeforeEach
@@ -73,10 +72,7 @@ class SigV4ProxyTest {
 
     @AfterEach
     void stopAll() {
-        for (int i = started.size() - 1; i >= 0; i--) {
-            started.get(i).close();
-        }
-        started.clear();
+        instances.close();
     }
 
     // --- the capturing upstream --------------------------------------------------------
@@ -129,26 +125,12 @@ class SigV4ProxyTest {
 
     // --- instance management -----------------------------------------------------------
 
-    private ConfigurableApplicationContext start(Class<?>[] sources, Map<String, String> properties) {
-        List<String> args = new ArrayList<>();
-        args.add("--server.port=0");
-        args.add("--spring.datasource.url=jdbc:h2:mem:" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1");
-        args.add("--spring.main.banner-mode=off");
-        args.add("--logging.level.root=WARN");
-        properties.forEach((key, value) -> args.add("--" + key + "=" + value));
-
-        ConfigurableApplicationContext context = new SpringApplicationBuilder(sources)
-                .run(args.toArray(String[]::new));
-        started.add(context);
-        return context;
-    }
-
     private String urlOf(ConfigurableApplicationContext context) {
-        return "http://localhost:" + context.getEnvironment().getProperty("local.server.port");
+        return AppInstances.urlOf(context);
     }
 
     private ConfigurableApplicationContext startUpstream() {
-        return start(new Class<?>[] {LlmMockApplication.class, CaptureConfiguration.class},
+        return instances.start(new Class<?>[] {LlmMockApplication.class, CaptureConfiguration.class},
                 Map.of("llm-mock.default-response-template", "[upstream] answered: {{prompt}}"));
     }
 
@@ -166,7 +148,7 @@ class SigV4ProxyTest {
                     "llm-mock.proxy.sigv4.bedrock.access-key-id", ACCESS_KEY,
                     "llm-mock.proxy.sigv4.bedrock.secret-access-key", SECRET_KEY));
         }
-        return start(new Class<?>[] {LlmMockApplication.class}, properties);
+        return instances.start(properties);
     }
 
     private Captured captured() {

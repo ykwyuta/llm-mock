@@ -26,6 +26,11 @@ import com.example.llmmock.proxy.RecordingStore;
 import com.example.llmmock.store.RequestLogRepository;
 import com.example.llmmock.store.StubRule;
 import com.example.llmmock.store.StubRuleRepository;
+import com.example.llmmock.usage.UsageRecord;
+import com.example.llmmock.usage.UsageRepository;
+import com.example.llmmock.usage.UsageSource;
+import com.example.llmmock.usage.UsageSummary;
+import com.example.llmmock.usage.UsageTracker;
 
 import jakarta.validation.Valid;
 
@@ -43,20 +48,55 @@ public class AdminController {
     private final StubRuleRepository stubs;
     private final RequestLogRepository logs;
     private final RecordingStore recordings;
+    private final UsageRepository usage;
+    private final UsageTracker usageTracker;
     private final LlmMockProperties properties;
 
     public AdminController(StubRuleRepository stubs, RequestLogRepository logs,
-                           RecordingStore recordings, LlmMockProperties properties) {
+                           RecordingStore recordings, UsageRepository usage,
+                           UsageTracker usageTracker, LlmMockProperties properties) {
         this.stubs = stubs;
         this.logs = logs;
         this.recordings = recordings;
+        this.usage = usage;
+        this.usageTracker = usageTracker;
         this.properties = properties;
     }
 
     @GetMapping("/health")
     public Map<String, Object> health() {
         return Map.of("status", "UP", "stubs", stubs.count(), "requests", logs.count(),
-                "mode", properties.getMode(), "recordings", recordings.size());
+                "mode", properties.getMode(), "recordings", recordings.size(),
+                "usageRecords", usage.count());
+    }
+
+    // --- token usage and cost --------------------------------------------------------
+
+    /** The individual calls, newest first. */
+    @GetMapping("/usage")
+    public List<UsageRecord> listUsage(@RequestParam(required = false) Provider provider,
+                                       @RequestParam(required = false) String model,
+                                       @RequestParam(required = false) UsageSource source,
+                                       @RequestParam(defaultValue = "100") int limit) {
+        Provider providerFilter = provider == Provider.ANY ? null : provider;
+        return usage.search(providerFilter, model, source,
+                PageRequest.of(0, Math.max(1, limit)));
+    }
+
+    /**
+     * Cost report, aggregated per model. {@code totals.upstreamCost} is what was actually
+     * spent; {@code totals.cacheSavings} is what the cache hits would have cost.
+     */
+    @GetMapping("/usage/summary")
+    public UsageSummary usageSummary(@RequestParam(required = false) Provider provider,
+                                     @RequestParam(required = false) UsageSource source) {
+        return usageTracker.summarise(provider == Provider.ANY ? null : provider, source);
+    }
+
+    @DeleteMapping("/usage")
+    public ResponseEntity<Void> deleteUsage() {
+        usageTracker.deleteAll();
+        return ResponseEntity.noContent().build();
     }
 
     // --- recordings ------------------------------------------------------------------
@@ -167,6 +207,7 @@ public class AdminController {
     public ResponseEntity<Void> reset() {
         stubs.deleteAll();
         logs.deleteAll();
+        usageTracker.deleteAll();
         return ResponseEntity.noContent().build();
     }
 

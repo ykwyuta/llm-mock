@@ -13,9 +13,13 @@ Gemini / OpenAI / Anthropic / Amazon Bedrock の 4 つの LLM API を **同時�
 | **`MOCK`** (既定) | スタブルールと既定テンプレートから応答を生成する |
 | **`PROXY`** | **本物の API に転送**し、その応答をそのまま返しつつ**ファイルに記録**する |
 | **`REPLAY`** | 記録したファイルから**バイト単位でそのまま**応答する |
+| **`CACHED_PROXY`** | 記録があればそれを返し、無ければ**一度だけ**転送して記録する (インテリジェントプロキシ) |
 
 つまり「一度だけ本物を叩いて記録 → 以降はそれをテストデータとして再生」という運用ができます
 (→ [7. プロキシ／記録／再生モード](#7-プロキシ記録再生モード))。
+
+また、プロキシした呼び出しについては**どのモデルがどれだけトークンを消費したか**を記録し、
+コスト分析ができます (→ [8. トークン消費とコスト分析](#8-トークン消費とコスト分析))。
 
 ---
 
@@ -104,7 +108,7 @@ Gemini / OpenAI / Anthropic / Amazon Bedrock の 4 つの LLM API を **同時�
 
 ```bash
 mvn spring-boot:run          # http://localhost:8080
-mvn test                     # 173 テスト
+mvn test                     # 204 テスト
 mvn package                  # 実行可能 jar
 ```
 
@@ -166,6 +170,9 @@ curl -X POST http://localhost:8080/__admin/reset
 | `GET` | `/__admin/requests` | 記録の検索 (`provider` `model` `endpoint` `limit`) |
 | `DELETE` | `/__admin/requests` | 記録の全削除 |
 | `POST` | `/__admin/reset` | スタブ＋記録の全削除 |
+| `GET` | `/__admin/usage` | トークン消費の明細 (`provider` `model` `source` `limit`) |
+| `GET` | `/__admin/usage/summary` | **コスト集計** (`provider` `source`) |
+| `DELETE` | `/__admin/usage` | 消費記録の全削除 |
 | `GET` | `/__admin/recordings` | プロキシ記録の一覧 |
 | `GET` | `/__admin/recordings/{key}` | 記録 1 件の全内容 |
 | `POST` | `/__admin/recordings/reload` | 記録ディレクトリの再スキャン |
@@ -232,6 +239,14 @@ llm-mock:
     redact-headers: [authorization, x-api-key, x-goog-api-key, ...]
     redact-query-params: [key, access_token]
     sigv4: {}                  # AWS SigV4 の付け直し (→ 7 章)
+    cache:
+      ttl:                     # CACHED_PROXY で記録が陳腐化するまでの時間 (未設定 = 無期限)
+      source-header: true      # X-Llm-Mock-Source ヘッダーを付ける
+  cost:                        # トークン消費とコスト分析 (→ 8 章)
+    enabled: true
+    currency: USD
+    max-entries: 10000
+    pricing: []                # 100 万トークンあたりの単価。既定は空
     connect-timeout: 10s
     request-timeout: 120s
   replay:
@@ -357,6 +372,44 @@ llm-mock:
     openai: PROXY      # OpenAI だけ本物を叩いて記録し、他はモックのまま
 ```
 
+### インテリジェントプロキシ (`CACHED_PROXY`)
+
+`PROXY` と `REPLAY` を 1 モードにまとめたものです。
+
+```
+ リクエスト ──▶ 記録あり? ──yes──▶ 記録から応答 (上流を呼ばない)
+                    │
+                    no
+                    ▼
+              上流を 1 回だけ呼ぶ ──▶ 応答を返す + 記録する
+```
+
+```yaml
+llm-mock:
+  mode: CACHED_PROXY
+  proxy:
+    recordings-dir: ./recordings
+    targets:
+      openai: https://api.openai.com
+    cache:
+      ttl: 24h        # 未設定なら記録は無期限に有効
+```
+
+**同じリクエストが 2 回来たら 2 回目はキャッシュ**から返るので、上流は呼ばれず、
+料金も発生せず、応答も即座です。応答には `X-Llm-Mock-Source` ヘッダーが付き、
+`upstream` / `cache` / `recording` のどれで応じたかが分かります。
+
+```
+$ curl -D- -X POST .../openai/v1/chat/completions -d '{...}'
+X-Llm-Mock-Source: upstream      ← 1 回目。本物を呼んだ
+$ curl -D- -X POST .../openai/v1/chat/completions -d '{...}'
+X-Llm-Mock-Source: cache         ← 2 回目。記録から返した
+```
+
+記録はファイルに残るので、**次回の実行では 1 回目からキャッシュヒット**します。
+テストスイートを回すたびにフィクスチャが揃っていき、以降は無料かつオフラインで回せる、
+という運用になります。`ttl` を設定すれば、古くなった記録だけを取り直せます。
+
 ### AWS SigV4 の付け直し (Bedrock)
 
 Bedrock だけは、他の 3 社のように「`Authorization` ヘッダーをそのまま転送する」ことが
@@ -415,7 +468,97 @@ llm-mock の設定内にとどまり、アプリの設定を触る必要はあ�
 - プレフィックスを空にしてルート直下にマウントしたプロバイダーは、パスから判別できないため
   プロキシ対象外です。
 
-## 8. 決定論について
+## 8. トークン消費とコスト分析
+
+プロキシした呼び出しについて、**どのモデルがどれだけトークンを消費したか**を記録します。
+プロキシモードでは応答を作るのは上流なので、トークン数が存在する唯一の場所は
+**応答ボディ**です。4 社とも表記が違い、ストリーミングでは複数イベントに分かれるため、
+形式ごとに個別に解釈しています。
+
+| プロバイダー | 非ストリーミング | ストリーミング |
+|---|---|---|
+| OpenAI | `usage.prompt_tokens` / `completion_tokens` | 最終チャンクの `usage` (`stream_options.include_usage` 指定時のみ) |
+| Anthropic | `usage.input_tokens` / `output_tokens` | `message_start` に入力、`message_delta` に出力 |
+| Gemini | `usageMetadata.promptTokenCount` ほか | 最終チャンクの `usageMetadata` |
+| Bedrock | `usage.inputTokens` / `outputTokens` | `metadata` イベント (バイナリ event stream をデコード) |
+
+Bedrock の `InvokeModel` はモデル固有形式なので、anthropic / titan / nova / llama
+それぞれの表記に対応しています。プロンプトキャッシュのトークン
+(`cache_read_input_tokens` / `cachedContentTokenCount` など) も別枠で記録します。
+
+### 単価の設定
+
+```yaml
+llm-mock:
+  cost:
+    currency: USD
+    pricing:                        # 100 万トークンあたりの単価。上から順に最初に一致したものを使う
+      - model-pattern: "^gpt-4o$"
+        input: 2.50
+        output: 10.00
+        cache-read: 1.25
+      - model-pattern: "^claude-sonnet"
+        input: 3.00
+        output: 15.00
+```
+
+**単価は既定で空です。** ベンダーの価格は変わるので、古い数値を埋め込むと
+「自信たっぷりに間違った合計」を黙って出すことになり、合計が出ないより有害だからです。
+単価が無いモデルもトークン数は集計され、`unpricedModels` に名前が出ます。
+
+### 集計を見る
+
+```bash
+curl 'http://localhost:8080/__admin/usage/summary'
+```
+
+```json
+{
+  "currency": "USD",
+  "byModel": [
+    { "provider": "OPENAI", "model": "gpt-4o", "requests": 2,
+      "inputTokens": 22, "outputTokens": 26, "totalTokens": 48,
+      "cost": 0.000315, "priced": true },
+    { "provider": "ANTHROPIC", "model": "claude-sonnet-4-5", "requests": 1,
+      "inputTokens": 13, "outputTokens": 15, "totalTokens": 28,
+      "cost": 0.000264, "priced": true }
+  ],
+  "totals": {
+    "requests": 3, "totalTokens": 76,
+    "cost": 0.000579,
+    "upstreamCost": 0.0004215,     ← 実際に発生した費用
+    "cacheSavings": 0.0001575,     ← キャッシュヒットが節約した分
+    "upstreamRequests": 2, "cacheHits": 1
+  },
+  "unpricedModels": []
+}
+```
+
+`source` で発生源を区別できます。
+
+| `source` | 意味 |
+|---|---|
+| `UPSTREAM` | 本物の API を呼んだ。**実際に発生した費用** |
+| `CACHE` | `CACHED_PROXY` のキャッシュヒット。**節約できた費用** |
+| `RECORDING` | `REPLAY` での再生。オフラインのテストデータ |
+| `MOCK` | スタブエンジンが生成。トークン数は合成値 |
+
+```bash
+# 実際に課金された分だけ見る
+curl 'http://localhost:8080/__admin/usage/summary?source=UPSTREAM'
+# モデル別の明細
+curl 'http://localhost:8080/__admin/usage?model=gpt-4o&limit=20'
+```
+
+キャッシュヒットのトークンも記録するのは、**キャッシュがいくら節約したかを見るため**です。
+モックモードのトラフィックも記録しますが `source=MOCK` で区別されるので、
+実費の集計からは除外できます。
+
+> **注意:** 入力トークンのうちキャッシュ読み出し分は `cache-read` 単価で計算し、
+> 通常の入力単価では二重計上しません。また `max-entries` を超えた古い明細は削除されるため、
+> 長時間動かした場合の合計は下振れします。
+
+## 9. 決定論について
 
 テストで扱いやすいよう、次はすべて決定論的です。
 
@@ -429,15 +572,15 @@ llm-mock の設定内にとどまり、アプリの設定を触る必要はあ�
 
 ---
 
-## 9. テスト
+## 10. テスト
 
 ```bash
-mvn test     # 173 tests
+mvn test     # 204 tests
 ```
 
 テストは 2 段構えです。
 
-### 9.1 HTTP レベル (仕様どおりか)
+### 10.1 HTTP レベル (仕様どおりか)
 
 | テスト | 対象 |
 |---|---|
@@ -449,11 +592,12 @@ mvn test     # 173 tests
 | `CrossProviderTest` | **1 つのスタブが 4 プロトコルすべてに効くこと**、逆にプロバイダー限定スタブが漏れないこと |
 | `RecordingKeyTest` | 照合キーの導出 (何が効いて何が効かないか)、ファイル名の生成 |
 | `SigV4SignerTest` | SigV4 署名を**独立実装の検証器**で検算 (`:` を含むパス、クエリ、一時資格情報を含む) |
+| `UsageExtractorTest` | 4 社 × 非ストリーミング／ストリーミング／Bedrock の各ネイティブ形式からのトークン数抽出 |
 
 ストリーミングはレスポンスへ直接書き出す実装のため、非同期ディスパッチなしに素の MockMvc で
 本文を検証できます。
 
-### 9.2 SDK レベル (**本物のクライアントが動くか**)
+### 10.2 SDK レベル (**本物のクライアントが動くか**)
 
 HTTP レベルのテストが保証するのは「**こちらのドキュメント解釈どおりに動くこと**」だけで、
 実際の SDK が要求するのに実装し忘れたエンドポイントやフィールドは検出できません。
@@ -484,7 +628,7 @@ HTTP レベルのテストが保証するのは「**こちらのドキュメン�
 なお、SDK のリトライは無効化しています。テストを遅くするうえ、後続の成功で本当の失敗が
 隠れてしまうためです。
 
-### 9.3 プロキシ／再生 (`ProxyModeTest`)
+### 10.3 プロキシ／再生 (`ProxyModeTest`)
 
 プロキシ機能のテストで**本物の API を叩くわけにはいかない**ので、
 **このアプリケーション自身のもう 1 インスタンスを「本物の上流 API」役**として使っています。
@@ -516,7 +660,7 @@ HTTP レベルのテストが保証するのは「**こちらのドキュメン�
 - **公式 OpenAI SDK が、プロキシ経由でも再生でも同じ応答を得ること**
   (id が一致する = 生成ではなく記録が返っている証拠)。ストリーミングも同様
 
-### 9.4 SigV4 の付け直し (`SigV4SignerTest` / `SigV4ProxyTest`)
+### 10.4 SigV4 の付け直し (`SigV4SignerTest` / `SigV4ProxyTest`)
 
 署名の正しさは「動いたように見える」では確かめられないので、**署名仕様から起こした独立実装の
 検証器** (`SigV4Verifier`) を用意し、本物の AWS エンドポイントがやるのと同じ手順
@@ -535,7 +679,23 @@ HTTP レベルのテストが保証するのは「**こちらのドキュメン�
 - ボディを 1 バイト変えると検証が**落ちる**こと (検証器が実際に検算している証拠)
 - 署名を無効にすれば `Authorization` がそのまま転送されること
 
-## 10. 既知の制限
+### 10.5 インテリジェントプロキシとコスト分析 (`CachedProxyTest` / `CostAnalysisTest`)
+
+上流役がモックインスタンスであることがここで効きます。**上流自身のリクエストログが
+「実際に何回呼ばれたか」の正確なカウンタ**になるので、キャッシュヒットが本当に上流へ
+行っていないことを証明できます。
+
+- 2 回目の同一リクエストが `X-Llm-Mock-Source: cache` で返り、**上流の呼び出し回数が
+  増えていない**こと
+- 上流を停止してもキャッシュヒットは応答できること
+- TTL 経過後は取り直し、TTL 内ならヒットすること
+- SSE と Bedrock のバイナリストリームもバイト単位でキャッシュされること
+- **前回の実行が残した記録が、次回は 1 回目からヒットする**こと (このモードの目的そのもの)
+- 単価設定からのコスト計算が、明細のトークン数と一致すること
+- キャッシュヒットが `cacheSavings` に、実呼び出しが `upstreamCost` に分かれること
+- 単価未設定のモデルはトークンだけ集計され、コストは `null` かつ `unpricedModels` に載ること
+
+## 11. 既知の制限
 
 - **SigV4 は検証しません。** Bedrock では `Authorization` ヘッダーの有無しか見ません
   (`require-auth: true` の場合)。署名そのものの検証はモックの目的外です。
@@ -553,6 +713,10 @@ HTTP レベルのテストが保証するのは「**こちらのドキュメン�
   はずですが、実際のベンダー固有の挙動 (SigV4 署名の再計算が必要なケースなど) は未検証です。
   Bedrock の SigV4 付け直しは実装済み (→ 7 章) で、上流役のモックに対して検証していますが、
   **本物の AWS エンドポイントに対しては未検証**です。
+- **コスト集計は `max-entries` (既定 10000 件) を超えると古い明細から削除される**ため、
+  長時間動かした場合の合計は下振れします。恒久的な課金台帳ではなく、テスト実行単位の
+  分析用と考えてください。
+- **単価表は同梱していません。** 実際の請求額と突き合わせるには自分で設定する必要があります。
 - 記録は 1 リクエスト 1 ファイルで、**同一リクエストに対する複数の異なる応答**
   (呼ぶたびに違う応答を返すシナリオ) は表現できません。それが必要な場合は、
   記録ではなく `remainingUses` 付きのスタブルールを使ってください。
