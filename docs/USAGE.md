@@ -78,7 +78,7 @@ llm-mock には 4 つの動作モードがあり、大きく 3 つの使い方�
 ```bash
 git clone https://github.com/ykwyuta/llm-mock.git
 cd llm-mock
-mvn spring-boot:run
+./mvnw spring-boot:run
 ```
 
 `Started LlmMockApplication` と出れば起動完了です (初回はビルドのため数十秒かかります)。
@@ -177,8 +177,8 @@ curl -X POST http://localhost:8080/__admin/reset   # スタブ・リクエスト
 
 | 方法 | コマンド | 用途 |
 |---|---|---|
-| Maven から | `mvn spring-boot:run` | 開発中。コードを触りながら使う |
-| jar から | `mvn package` → `java -jar target/llm-mock-0.1.0-SNAPSHOT.jar` | CI やチーム配布。起動が速い |
+| Maven から | `./mvnw spring-boot:run` | 開発中。コードを触りながら使う |
+| jar から | `./mvnw package` → `java -jar target/llm-mock-0.1.0-SNAPSHOT.jar` | CI やチーム配布。起動が速い |
 | テストから | `@SpringBootTest(webEnvironment = RANDOM_PORT)` | Java のテストスイートに埋め込む ([12.2](#122-junit-5-java)) |
 
 停止は `Ctrl-C`、バックグラウンド起動なら `kill <pid>` です。
@@ -1053,7 +1053,7 @@ jobs:
 
       - name: llm-mock を起動
         run: |
-          mvn -q -DskipTests package
+          ./mvnw -q -DskipTests package
           nohup java -jar target/llm-mock-0.1.0-SNAPSHOT.jar &
           for i in $(seq 1 60); do
             curl -sf http://localhost:8080/__admin/health && break

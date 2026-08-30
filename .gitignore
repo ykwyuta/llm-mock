@@ -6,3 +6,11 @@ target/
 *.iml
 .vscode/
 .DS_Store
+
+# Recordings written by a PROXY / CACHED_PROXY run against this checkout. In your own
+# project these are fixtures worth committing; here they are just local scratch.
+/recordings/
+*.log
+
+# Maven wrapper downloads its distribution here.
+.mvn/wrapper/*.jar

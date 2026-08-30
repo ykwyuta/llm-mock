@@ -1,5 +1,10 @@
 # llm-mock
 
+[![CI](https://github.com/ykwyuta/llm-mock/actions/workflows/ci.yml/badge.svg)](https://github.com/ykwyuta/llm-mock/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Java 21](https://img.shields.io/badge/Java-21-orange.svg)](https://adoptium.net/)
+[![Spring Boot 4.1](https://img.shields.io/badge/Spring%20Boot-4.1-brightgreen.svg)](https://spring.io/projects/spring-boot)
+
 Gemini / OpenAI / Anthropic / Amazon Bedrock の 4 つの LLM API を **同時に**エミュレートする、
 テスト用の汎用モックサーバーです。Spring Boot 4.1 (Java 21) + H2 で実装しています。
 
@@ -111,9 +116,9 @@ Gemini / OpenAI / Anthropic / Amazon Bedrock の 4 つの LLM API を **同時�
 ## 3. 起動と接続
 
 ```bash
-mvn spring-boot:run          # http://localhost:8080
-mvn test                     # 204 テスト
-mvn package                  # 実行可能 jar
+./mvnw spring-boot:run       # http://localhost:8080
+./mvnw test                  # 207 テスト
+./mvnw package               # 実行可能 jar
 ```
 
 プロバイダーごとに URL プレフィックスが付きます (`llm-mock.paths.*` で変更可)。
@@ -592,7 +597,7 @@ curl 'http://localhost:8080/__admin/usage?model=gpt-4o&limit=20'
 ## 10. テスト
 
 ```bash
-mvn test     # 204 tests
+./mvnw test     # 207 tests
 ```
 
 テストは 2 段構えです。
@@ -737,3 +742,52 @@ HTTP レベルのテストが保証するのは「**こちらのドキュメン�
 - 記録は 1 リクエスト 1 ファイルで、**同一リクエストに対する複数の異なる応答**
   (呼ぶたびに違う応答を返すシナリオ) は表現できません。それが必要な場合は、
   記録ではなく `remainingUses` 付きのスタブルールを使ってください。
+
+---
+
+## 12. 貢献
+
+バグ報告・機能提案・プルリクエストを歓迎します。
+ビルド方法、テストの置き場所、よくある変更の手順は
+[CONTRIBUTING.md](CONTRIBUTING.md) にまとめてあります。
+参加にあたっては [行動規範](CODE_OF_CONDUCT.md) に同意したものとみなします。
+
+テストは**本物の API を一切呼びません** (プロキシ機能のテストは、このアプリのもう 1
+インスタンスを上流役として使っています)。API キーも AWS の資格情報も無しで、
+`./mvnw test` だけで全部通ります。
+
+セキュリティ上の注意と脆弱性の報告方法は [SECURITY.md](SECURITY.md) を参照してください。
+とくに、**このサーバーは公開ネットワークに置かない**でください
+(管理 API に認証がなく、H2 コンソールが既定で有効です)。
+
+---
+
+## 13. ライセンス
+
+[MIT License](LICENSE) です。Copyright (c) 2026 ykwyuta。
+
+### 依存ライブラリ
+
+同梱・配布されるのは実行時依存だけです。テスト用の 4 社の公式 SDK は
+`scope=test` なので、ビルドされた jar には含まれません。
+
+| ライブラリ | スコープ | ライセンス |
+|---|---|---|
+| Spring Boot / Spring Framework | runtime | Apache-2.0 |
+| Jackson | runtime | Apache-2.0 |
+| H2 Database | runtime | **MPL-2.0 / EPL-1.0 (デュアル)** |
+| AWS SDK for Java v2 (`http-auth-aws` / `auth` / `regions`) | runtime | Apache-2.0 |
+| JUnit 5 | test | EPL-2.0 |
+| `com.openai:openai-java` | test | Apache-2.0 |
+| `com.anthropic:anthropic-java` | test | MIT |
+| `com.google.genai:google-genai` | test | Apache-2.0 |
+| `software.amazon.awssdk:bedrockruntime` ほか | test | Apache-2.0 |
+
+> **H2 のみコピーレフト系 (MPL-2.0) です。** MPL-2.0 はファイル単位のコピーレフトなので、
+> 改変せずにそのまま同梱する分には問題ありませんが、実行可能 jar
+> (`./mvnw package` が作る fat jar) を再配布する場合は、H2 のライセンス条項に従ってください。
+> H2 を使わずに別の DataSource に差し替えることもできます。
+
+llm-mock は、4 社の API の**ワイヤーフォーマットを公開仕様から実装**したものです。
+ベンダーのコードは含んでおらず、各社とは無関係の非公式なプロジェクトです。
+"OpenAI"、"Anthropic"、"Claude"、"Gemini"、"Amazon Bedrock" は各社の商標です。
