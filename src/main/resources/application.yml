@@ -108,4 +108,4 @@ llm-mock:
 
 logging:
   level:
-    com.example.llmmock: INFO
+    io.github.ykwyuta.llmmock: INFO
