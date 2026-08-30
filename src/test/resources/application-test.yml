@@ -15,4 +15,4 @@ llm-mock:
 logging:
   level:
     root: WARN
-    com.example.llmmock: INFO
+    com.github.llmmock: INFO

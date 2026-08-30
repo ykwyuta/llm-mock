@@ -34,7 +34,7 @@ API キーも AWS の資格情報も不要です。
 ## コードの歩き方
 
 ```
-src/main/java/com/example/llmmock/
+src/main/java/com/github/llmmock/
 ├── core/          正規化モデル (MockRequest / MockCompletion) と応答決定エンジン
 ├── provider/      4 社ごとの HTTP アダプター。各社の DTO ⇄ 正規化モデル
 │   ├── openai/    anthropic/  gemini/  bedrock/
